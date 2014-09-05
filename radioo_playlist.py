@@ -5,6 +5,7 @@
 import json
 import optparse
 import random
+import urllib
 
 import pylast
 
@@ -22,75 +23,123 @@ PLAYLIST_TYPES = [PLAYLIST_TYPE_TOP_SONGS,
 
 class TrackStream:
 
-    def __init__(self, lastfm_api):
-        self.history = []
+    def __init__(self):
+        self.mbid_history = []
         self.position = -1
-        
+    
+    def attach_api(self, lastfm_api):
         self.lastfm_api = lastfm_api
-        self.cached = []
+    
+    def track_history(self):
+        
+        if not hasattr(self, "_track_history"):
+            self._track_history = []
+        
+        if len(self._track_history) != len(self.mbid_history):
+            diff = len(self.mbid_history) - len(self._track_history)
+            if diff < 0:
+                self._track_history = self._track_history[0:diff]
+            else:
+                self._track_history = self._track_history + ([None] * diff)
+        
+        return self._track_history
 
-    def load(history, position):
-        self.history = history
-        self.position = position
+    def get_track_at(self, position):
+        
+        if not self.track_history()[position]:
+            if self.mbid_history[position][0]:
+                self.track_history()[position] = \
+                    self.lastfm_api.get_track_by_mbid(self.mbid_history[position][0])
+            else:
+                self.track_history()[position] = \
+                    self.lastfm_api.get_track(self.mbid_history[position][1],
+                                              self.mbid_history[position][2])
 
-    def find_next_track(self):
-        raise Exception("Not implemented")
+        return self.track_history()[position]
+    
+    def add_to_history(self, track):
+        self.mbid_history.append([track.get_mbid(), track.get_artist(), track.get_name()])
+        self.track_history().append(track)
 
     def next_track(self):
         
         track = None
         self.position = self.position + 1
         
-        if self.position < len(self.history):
-            track = get_track_at(self.position)
+        if self.position < len(self.mbid_history):
+            track = self.get_track_at(self.position)
         else:
-            track = find_next_track(track) 
-            self.history.append(track.get_mbid())
-            self.cached.append(track)
+            track = self.find_next_track()
+            self.add_to_history(track)
 
         return track
 
-    def get_track_at(self, position):
-        if not cached[position]:
-            cached[position] = lastfm_api.get_track_by_mbid(history[position])
-
-        return cached[position]
-
-class SimilarTrackStream:
-   
-    def __init__(self, lastfm_api):
-        
-        TrackStream.__init__(self)
-        
-        self.lastfm_api = lastfm_api
-   
-    def load(random_state, **kwargs):
-        TrackStream.__load__(self, **kwargs) 
-        self.random = random.Random()
-        self.random.setstate(random_state)
-        
-    def initial_track(self, track):
-        self.history[0] = track.get_mbid()
+    def prev_track(self):
+        self.position = self.position - 1
+        return self.get_track_at(self.position)
 
     def find_next_track(self):
-                
-        
+        raise Exception("Not implemented")
 
-    
+
+class SimilarTrackStream(TrackStream):
+   
+    def __init__(self, initial_track, rng):
+        TrackStream.__init__(self)
+        self.rng = rng
+        self.add_to_history(initial_track)
+
+    def find_next_track(self):
+
+        last_position = self.position
+        similar_tracks = []
+        while len(similar_tracks) == 0:
+            last_position = last_position - 1
+            last_track = self.get_track_at(last_position)
+            similar_tracks = last_track.get_similar()
+
+        return similar_tracks[self.rng.randrange(0, len(similar_tracks))][0]
 
 def get_lastfm_api(api_key, api_secret, username, password):
+    
     password = pylast.md5(password)
-    return pylast.LastFMNetwork(api_key=api_key,
-                                api_secret=api_secret,
-                                username=username,
-                                password_hash=password)
+
+    print "Connecting to LastFM..."
+    api = pylast.LastFMNetwork(api_key=api_key,
+                               api_secret=api_secret,
+                               username=username,
+                               password_hash=password)
+    print "Connected to LastFM."
+    
+    return api
 
 def get_top_songs(rng, lastfm_api):
     
-    top_artists = lastfm_api.get_top_artists(limit=10)
+    top_tracks = lastfm_api.get_top_tracks()
+
+    track_stream = SimilarTrackStream(top_tracks[rng.randrange(0, len(top_tracks))][0], rng)
+    track_stream.attach_api(lastfm_api)
+
+    while True:
+        track = track_stream.next_track()
+        
+        lastfm_link = track.get_url()
+        
+        mb_link = "???"
+        if track.get_mbid():
+            mb_link = "http://musicbrainz.org/recording/%s" % track.get_mbid()
+        
+        youtube_link = "http://gdata.youtube.com/feeds/api/videos?q=%s+%s" % \
+            (urllib.quote(track.get_artist().get_name()), urllib.quote(track.get_name()))
+
+        print "%s -- %s\n  %s\n  %s\n  %s" % \
+            (track.get_artist(), track.get_name(), 
+             lastfm_link, mb_link, youtube_link)
+
+#    top_artists = lastfm_api.get_top_artists(limit=10)
     
-    for artist, weight in top_artists:
-        print artist.get_name(properly_capitalized=True)
+#    for artist, weight in top_artists:
+#        print artist.get_name(properly_capitalized=True)
 
 def random_playlist(rng, lastfm_api):
     
@@ -98,11 +147,13 @@ def random_playlist(rng, lastfm_api):
     rng.shuffle(playlist_types)
     
     playlist_types = playlist_types[0:rng.randrange(1, len(playlist_types))]
-    
-    for playlist_type in playlist_types:
+   
+    get_top_songs(rng, lastfm_api)
+
+#    for playlist_type in playlist_types:
         
-        if playlist_type == PLAYLIST_TYPE_TOP_SONGS or True:
-            get_top_songs(rng, lastfm_api)
+#        if playlist_type == PLAYLIST_TYPE_TOP_SONGS or True:
+#            get_top_songs(rng, lastfm_api)
 
 def parse_args():
 
@@ -124,7 +175,7 @@ def main():
         credentials = json.load(credentials_file)
         lastfm_api = get_lastfm_api(**credentials)
    
-    random_playlist(random.Random(0), lastfm_api)
+    random_playlist(random.Random(), lastfm_api)
 
 
 if __name__ == "__main__":
